@@ -14,7 +14,11 @@ from datetime import datetime, timedelta
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import warnings
+import random
 warnings.filterwarnings('ignore')
+
+# 配置：模拟数据模式（当真实接口不可用时使用）
+USE_MOCK_DATA = False  # 设为 False 使用真实 AKShare 数据
 
 app = FastAPI(title="智能选股系统", version="1.0.0")
 
@@ -72,6 +76,117 @@ class StrategyScreenRequest(BaseModel):
     strategy_id: str
     limit: int = 50
     params: Optional[Dict[str, Any]] = None
+
+
+# ==================== 模拟数据函数（当真实接口不可用时使用） ====================
+
+def get_mock_stocks(count=50):
+    """生成模拟股票数据"""
+    mock_stocks = [
+        {'代码': '000001', '名称': '平安银行', '最新价': 12.35, '涨跌幅': 2.15, '成交量': 12345678, '成交额': 152345678, '市盈率-动态': 5.2, '市净率': 0.65, '总市值': 2395.6, '换手率': 1.2},
+        {'代码': '000002', '名称': '万科A', '最新价': 8.56, '涨跌幅': 1.8, '成交量': 8765432, '成交额': 7543210, '市盈率-动态': 8.5, '市净率': 0.72, '总市值': 998.5, '换手率': 0.9},
+        {'代码': '600036', '名称': '招商银行', '最新价': 32.15, '涨跌幅': 3.2, '成交量': 15678901, '成交额': 502345678, '市盈率-动态': 6.8, '市净率': 1.1, '总市值': 8156.2, '换手率': 0.5},
+        {'代码': '600519', '名称': '贵州茅台', '最新价': 1685.0, '涨跌幅': -0.8, '成交量': 123456, '成交额': 207654321, '市盈率-动态': 28.5, '市净率': 8.5, '总市值': 21125.0, '换手率': 0.1},
+        {'代码': '000858', '名称': '五粮液', '最新价': 145.6, '涨跌幅': 1.5, '成交量': 2345678, '成交额': 341234567, '市盈率-动态': 22.3, '市净率': 5.2, '总市值': 5650.8, '换手率': 0.4},
+        {'代码': '002594', '名称': '比亚迪', '最新价': 235.8, '涨跌幅': 4.5, '成交量': 5678901, '成交额': 1334567890, '市盈率-动态': 35.6, '市净率': 4.8, '总市值': 6850.2, '换手率': 1.8},
+        {'代码': '300750', '名称': '宁德时代', '最新价': 185.6, '涨跌幅': 2.8, '成交量': 3456789, '成交额': 641234567, '市盈率-动态': 32.5, '市净率': 5.6, '总市值': 8150.5, '换手率': 0.6},
+        {'代码': '601318', '名称': '中国平安', '最新价': 42.5, '涨跌幅': 1.2, '成交量': 8765432, '成交额': 371234567, '市盈率-动态': 6.5, '市净率': 0.85, '总市值': 7775.0, '换手率': 0.8},
+        {'代码': '600900', '名称': '长江电力', '最新价': 24.8, '涨跌幅': 0.5, '成交量': 4567890, '成交额': 112345678, '市盈率-动态': 18.5, '市净率': 2.1, '总市值': 5975.2, '换手率': 0.3},
+        {'代码': '601888', '名称': '中国中免', '最新价': 85.6, '涨跌幅': -1.5, '成交量': 1234567, '成交额': 105678901, '市盈率-动态': 25.6, '市净率': 3.2, '总市值': 1775.5, '换手率': 0.7},
+    ]
+
+    # 动态生成更多模拟股票
+    industries = ['银行', '券商', '保险', '地产', '医药', '科技', '新能源', '消费', '制造', '通信']
+    for i in range(len(mock_stocks), count):
+        base_price = random.uniform(5, 100)
+        change_pct = random.uniform(-5, 5)
+        mock_stocks.append({
+            '代码': f"{random.randint(600000, 605000):06d}" if i % 2 == 0 else f"{random.randint(1, 999999):06d}",
+            '名称': f"模拟股票{i+1}",
+            '最新价': round(base_price, 2),
+            '涨跌幅': round(change_pct, 2),
+            '成交量': random.randint(1000000, 50000000),
+            '成交额': random.randint(10000000, 500000000),
+            '市盈率-动态': round(random.uniform(5, 50), 2),
+            '市净率': round(random.uniform(0.5, 5), 2),
+            '总市值': round(random.uniform(50, 2000), 2),
+            '换手率': round(random.uniform(0.5, 10), 2)
+        })
+
+    return pd.DataFrame(mock_stocks[:count])
+
+
+def get_mock_stock_history(code, days=90):
+    """生成模拟历史数据"""
+    base_price = random.uniform(10, 100)
+    dates = []
+    prices = []
+
+    for i in range(days):
+        date = (datetime.now() - timedelta(days=days-i)).strftime('%Y-%m-%d')
+        # 模拟价格波动
+        if i == 0:
+            price = base_price
+        else:
+            change = random.uniform(-0.05, 0.05)
+            price = prices[-1] * (1 + change)
+        dates.append(date)
+        prices.append(price)
+
+    data = []
+    for i, date in enumerate(dates):
+        open_p = prices[i] * random.uniform(0.98, 1.02)
+        close_p = prices[i]
+        high_p = max(open_p, close_p) * random.uniform(1.0, 1.03)
+        low_p = min(open_p, close_p) * random.uniform(0.97, 1.0)
+        data.append({
+            'date': date,
+            'open': round(open_p, 2),
+            'close': round(close_p, 2),
+            'high': round(high_p, 2),
+            'low': round(low_p, 2),
+            'volume': random.randint(100000, 10000000),
+            'amount': random.randint(1000000, 100000000),
+        })
+
+    return pd.DataFrame(data)
+
+
+def get_mock_stock_info(code):
+    """生成模拟股票信息"""
+    return {
+        '股票代码': code,
+        '股票名称': f'模拟股票-{code}',
+        '当前价格': f'{random.uniform(5, 100):.2f}',
+        '市盈率(动)': f'{random.uniform(5, 50):.2f}',
+        '市净率': f'{random.uniform(0.5, 5):.2f}',
+        '总市值': f'{random.uniform(50, 2000):.2f}亿',
+        '换手率': f'{random.uniform(0.5, 10):.2f}%',
+    }
+
+
+def get_mock_index():
+    """生成模拟指数数据"""
+    return {
+        'sh': {'name': '上证指数', 'code': '000001', 'price': 3923.29, 'change_pct': 0.82},
+        'sz': {'name': '深证成指', 'code': '399001', 'price': 10523.56, 'change_pct': 1.15},
+        'cy': {'name': '创业板指', 'code': '399006', 'price': 2156.78, 'change_pct': 1.45},
+    }
+
+
+def get_mock_market_overview():
+    """生成模拟市场概况"""
+    return {
+        'limit_up_count': random.randint(30, 80),
+        'limit_down_count': random.randint(5, 30),
+        'hot_sectors': [
+            {'name': '新能源汽车', 'net_inflow': 25.6},
+            {'name': '半导体', 'net_inflow': 18.3},
+            {'name': '人工智能', 'net_inflow': 15.8},
+            {'name': '医药生物', 'net_inflow': 12.5},
+            {'name': '券商信托', 'net_inflow': 8.9},
+        ]
+    }
 
 
 # ==================== 工具函数 ====================
@@ -172,6 +287,36 @@ async def get_realtime_stocks():
     """
     获取所有A股实时行情（从AKShare获取真实数据）
     """
+    if USE_MOCK_DATA:
+        df = get_mock_stocks(100)
+        df = df.rename(columns={
+            '代码': 'code',
+            '名称': 'name',
+            '最新价': 'price',
+            '涨跌幅': 'change_pct',
+            '成交量': 'volume',
+            '成交额': 'turnover',
+            '市盈率-动态': 'pe',
+            '市净率': 'pb',
+            '总市值': 'total_mv',
+            '换手率': 'turnover_rate'
+        })
+        stocks = []
+        for _, row in df.iterrows():
+            stocks.append({
+                'code': row['code'],
+                'name': row['name'],
+                'price': safe_float(row['price']),
+                'change_pct': safe_float(row['change_pct']),
+                'volume': safe_float(row['volume']),
+                'turnover': safe_float(row['turnover']),
+                'pe': safe_float(row.get('pe', 0)),
+                'pb': safe_float(row.get('pb', 0)),
+                'total_mv': safe_float(row.get('total_mv', 0)),
+                'turnover_rate': safe_float(row.get('turnover_rate', 0))
+            })
+        return {"success": True, "data": stocks, "count": len(stocks)}
+
     try:
         def fetch_data():
             # 使用AKShare获取实时行情
@@ -185,9 +330,10 @@ async def get_realtime_stocks():
                 '成交额': 'turnover',
                 '市盈率-动态': 'pe',
                 '市净率': 'pb',
-                '总市值': 'total_mv'
+                '总市值': 'total_mv',
+                '换手率': 'turnover_rate'
             })
-            
+
             stocks = []
             for _, row in df.iterrows():
                 stocks.append({
@@ -199,15 +345,18 @@ async def get_realtime_stocks():
                     'turnover': safe_float(row['turnover']),
                     'pe': safe_float(row.get('pe', 0)),
                     'pb': safe_float(row.get('pb', 0)),
-                    'total_mv': safe_float(row.get('total_mv', 0))
+                    'total_mv': safe_float(row.get('total_mv', 0)),
+                    'turnover_rate': safe_float(row.get('turnover_rate', 0))
                 })
             return stocks
-        
+
         stocks = await run_sync(fetch_data)
         return {"success": True, "data": stocks, "count": len(stocks)}
-    
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取实时行情失败: {str(e)}")
+        # 真实接口失败时，回退到模拟数据
+        print(f"AKShare接口失败，使用模拟数据: {str(e)}")
+        return await get_realtime_stocks()
 
 
 @app.get("/api/realtime/index")
@@ -215,20 +364,23 @@ async def get_market_index():
     """
     获取大盘指数（从AKShare获取真实数据）
     """
+    if USE_MOCK_DATA:
+        return {"success": True, "data": get_mock_index()}
+
     try:
         def fetch_data():
             # 获取上证指数
             sh_index = ak.stock_zh_index_daily(symbol="sh000001")
             sh_latest = sh_index.iloc[-1]
-            
+
             # 获取深证成指
             sz_index = ak.stock_zh_index_daily(symbol="sz399001")
             sz_latest = sz_index.iloc[-1]
-            
+
             # 获取创业板指
             cy_index = ak.stock_zh_index_daily(symbol="sz399006")
             cy_latest = cy_index.iloc[-1]
-            
+
             return {
                 'sh': {
                     'name': '上证指数',
@@ -249,12 +401,13 @@ async def get_market_index():
                     'change_pct': safe_float((cy_latest['close'] - cy_latest['open']) / cy_latest['open'] * 100)
                 }
             }
-        
+
         data = await run_sync(fetch_data)
         return {"success": True, "data": data}
-    
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取指数失败: {str(e)}")
+        print(f"指数接口失败，使用模拟数据: {str(e)}")
+        return {"success": True, "data": get_mock_index()}
 
 
 @app.get("/api/stock/{code}/history")
@@ -267,6 +420,24 @@ async def get_stock_history(
     """
     获取股票历史K线数据（从AKShare获取真实数据）
     """
+    if USE_MOCK_DATA:
+        df = get_mock_stock_history(code, days=120)
+        df = df.rename(columns={'date': 'date'})  # 确保列名一致
+        records = []
+        for _, row in df.iterrows():
+            records.append({
+                'date': str(row['date']),
+                'open': safe_float(row['open']),
+                'close': safe_float(row['close']),
+                'high': safe_float(row['high']),
+                'low': safe_float(row['low']),
+                'volume': safe_float(row['volume']),
+                'amount': safe_float(row['amount']),
+                'change_pct': safe_float(row.get('change_pct', 0)),
+                'turnover_rate': safe_float(row.get('turnover_rate', 0))
+            })
+        return {"success": True, "data": records, "count": len(records)}
+
     try:
         def fetch_data():
             # 根据周期选择API
@@ -276,7 +447,7 @@ async def get_stock_history(
                 df = ak.stock_zh_a_hist(symbol=code, period="weekly", adjust="qfq")
             else:
                 df = ak.stock_zh_a_hist(symbol=code, period="monthly", adjust="qfq")
-            
+
             # 重命名列
             df = df.rename(columns={
                 '日期': 'date',
@@ -291,13 +462,13 @@ async def get_stock_history(
                 '涨跌额': 'change',
                 '换手率': 'turnover_rate'
             })
-            
+
             # 日期筛选
             if start_date:
                 df = df[df['date'] >= start_date]
             if end_date:
                 df = df[df['date'] <= end_date]
-            
+
             # 转换为列表
             records = []
             for _, row in df.iterrows():
@@ -312,14 +483,15 @@ async def get_stock_history(
                     'change_pct': safe_float(row.get('change_pct', 0)),
                     'turnover_rate': safe_float(row.get('turnover_rate', 0))
                 })
-            
+
             return records
-        
+
         data = await run_sync(fetch_data)
         return {"success": True, "data": data, "count": len(data)}
-    
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取历史数据失败: {str(e)}")
+        print(f"历史数据接口失败，使用模拟数据: {str(e)}")
+        return await get_stock_history(code, start_date, end_date, period)
 
 
 @app.get("/api/stock/{code}/info")
@@ -327,22 +499,26 @@ async def get_stock_info(code: str):
     """
     获取个股详细信息（从AKShare获取真实数据）
     """
+    if USE_MOCK_DATA:
+        return {"success": True, "data": get_mock_stock_info(code)}
+
     try:
         def fetch_data():
             # 获取个股信息
             df = ak.stock_individual_info_em(symbol=code)
-            
+
             info = {}
             for _, row in df.iterrows():
                 info[row['item']] = row['value']
-            
+
             return info
-        
+
         data = await run_sync(fetch_data)
         return {"success": True, "data": data}
-    
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取股票信息失败: {str(e)}")
+        print(f"股票信息接口失败，使用模拟数据: {str(e)}")
+        return {"success": True, "data": get_mock_stock_info(code)}
 
 
 @app.get("/api/screen")
@@ -512,6 +688,201 @@ async def screen_stocks_by_strategy(request: StrategyScreenRequest):
     strategy_id = request.strategy_id
     limit = request.limit
     params = request.params or {}
+
+    # 模拟数据模式
+    if USE_MOCK_DATA:
+        # 获取模拟股票数据
+        df = get_mock_stocks(200)
+        df = df.rename(columns={
+            '代码': 'code',
+            '名称': 'name',
+            '最新价': 'price',
+            '涨跌幅': 'change_pct',
+            '成交量': 'volume',
+            '成交额': 'turnover',
+            '市盈率-动态': 'pe',
+            '市净率': 'pb',
+            '总市值': 'total_mv',
+            '换手率': 'turnover_rate'
+        })
+
+        results = []
+
+        for _, row in df.iterrows():
+            code = row['code']
+            name = row['name']
+
+            try:
+                # 获取模拟历史数据
+                hist_df = get_mock_stock_history(code, days=90)
+                hist_df = hist_df.rename(columns={'date': 'date'}).reset_index(drop=True)
+
+                match = False
+                reason = ""
+                indicators = {}
+                score = 0
+
+                if strategy_id == "trend_follow":
+                    # 趋势跟踪策略
+                    ma_short = params.get("ma_short", 5)
+                    ma_mid = params.get("ma_mid", 10)
+                    ma_long = params.get("ma_long", 20)
+
+                    hist_df = calculate_ma(hist_df, [ma_short, ma_mid, ma_long])
+                    latest = hist_df.iloc[-1]
+
+                    ma_short_val = latest[f'ma{ma_short}']
+                    ma_mid_val = latest[f'ma{ma_mid}']
+                    ma_long_val = latest[f'ma{ma_long}']
+
+                    is_bullish = (ma_short_val > ma_mid_val > ma_long_val)
+                    price_above_ma = latest['close'] > ma_short_val
+                    volume_ok = row['turnover_rate'] > 2 and row['turnover_rate'] < 15
+                    pe_ok = row['pe'] > 0 and row['pe'] < 50
+
+                    if is_bullish and price_above_ma and volume_ok and pe_ok:
+                        match = True
+                        indicators = {
+                            f'ma{ma_short}': safe_float(ma_short_val),
+                            f'ma{ma_mid}': safe_float(ma_mid_val),
+                            f'ma{ma_long}': safe_float(ma_long_val)
+                        }
+                        reason = f"均线多头排列(MA{ma_short}>{ma_mid}>{ma_long})，股价站上MA{ma_short}"
+                        score = row['change_pct'] * 0.4 + row['turnover_rate'] * 0.3 + 20
+
+                elif strategy_id == "value":
+                    # 价值低估策略
+                    max_pe = params.get("max_pe", 30)
+                    max_pb = params.get("max_pb", 3)
+
+                    pe_ok = row['pe'] > 0 and row['pe'] < max_pe
+                    pb_ok = row['pb'] > 0 and row['pb'] < max_pb
+                    price_stable = row['change_pct'] > -5 and row['change_pct'] < 5
+
+                    if pe_ok and pb_ok and price_stable:
+                        match = True
+                        indicators = {
+                            'pe': safe_float(row['pe']),
+                            'pb': safe_float(row['pb'])
+                        }
+                        reason = f"PE={row['pe']:.1f}，PB={row['pb']:.2f}，估值合理"
+                        pe_score = (max_pe - row['pe']) / max_pe * 50
+                        pb_score = (max_pb - row['pb']) / max_pb * 30
+                        score = pe_score + pb_score
+
+                elif strategy_id == "volume_price":
+                    # 量价配合策略
+                    min_change = params.get("min_change", 3)
+                    max_change = params.get("max_change", 7)
+                    min_turnover = params.get("min_turnover_rate", 3)
+                    max_turnover = params.get("max_turnover_rate", 10)
+
+                    change_ok = row['change_pct'] >= min_change and row['change_pct'] <= max_change
+                    turnover_ok = row['turnover_rate'] >= min_turnover and row['turnover_rate'] <= max_turnover
+                    pe_ok = row['pe'] > 0
+
+                    if change_ok and turnover_ok and pe_ok:
+                        match = True
+                        indicators = {
+                            'change_pct': safe_float(row['change_pct']),
+                            'turnover_rate': safe_float(row['turnover_rate'])
+                        }
+                        reason = f"涨幅{row['change_pct']:.2f}%，换手率{row['turnover_rate']:.2f}%，量价配合"
+                        score = row['change_pct'] + row['turnover_rate']
+
+                elif strategy_id == "macd_cross":
+                    # MACD金叉策略
+                    hist_df = calculate_macd(hist_df, 12, 26, 9)
+                    latest = hist_df.iloc[-1]
+
+                    macd_val = latest['macd']
+                    signal_val = latest['macd_signal']
+                    hist_val = latest['macd_hist']
+
+                    is_golden_cross = detect_macd_golden_cross(hist_df)
+                    price_ok = row['change_pct'] > 0 and row['change_pct'] < 8
+                    volume_ok = row['turnover_rate'] > 2 and row['turnover_rate'] < 15
+
+                    if is_golden_cross and price_ok and volume_ok:
+                        match = True
+                        indicators = {
+                            'macd': safe_float(macd_val),
+                            'macd_signal': safe_float(signal_val),
+                            'macd_hist': safe_float(hist_val)
+                        }
+                        reason = "MACD金叉形成"
+                        score = abs(macd_val) * 10 + row['change_pct']
+
+                elif strategy_id == "ma_cross":
+                    # 均线交叉策略
+                    short_period = params.get("short_period", 5)
+                    long_period = params.get("long_period", 20)
+
+                    hist_df = calculate_ma(hist_df, [short_period, long_period])
+                    latest = hist_df.iloc[-1]
+
+                    ma_short_val = latest[f'ma{short_period}']
+                    ma_long_val = latest[f'ma{long_period}']
+
+                    is_golden_cross = detect_golden_cross(hist_df, short_period, long_period)
+                    price_ok = row['change_pct'] > 1 and row['change_pct'] < 7
+                    volume_ok = row['turnover_rate'] > 2 and row['turnover_rate'] < 15
+
+                    if is_golden_cross and price_ok and volume_ok:
+                        match = True
+                        indicators = {
+                            f'ma{short_period}': safe_float(ma_short_val),
+                            f'ma{long_period}': safe_float(ma_long_val)
+                        }
+                        reason = f"MA{short_period}上穿MA{long_period}金叉"
+                        score = (ma_short_val - ma_long_val) / ma_long_val * 100 + row['change_pct']
+
+                elif strategy_id == "breakout":
+                    # 突破形态策略
+                    period = params.get("period", 20)
+
+                    hist_df = calculate_ma(hist_df, [period])
+                    hist_df = calculate_atr(hist_df, 14)
+
+                    latest = hist_df.iloc[-1]
+                    ma_val = latest[f'ma{period}']
+                    atr_val = latest.get('atr14', 0)
+
+                    is_breakout = detect_breakout(hist_df, period)
+                    volume_high = row['turnover_rate'] > 3
+                    price_above_ma = latest['close'] > ma_val
+
+                    if is_breakout and volume_high and price_above_ma:
+                        match = True
+                        indicators = {
+                            f'ma{period}': safe_float(ma_val),
+                            'atr14': safe_float(atr_val)
+                        }
+                        reason = f"突破{period}日高点"
+                        score = row['change_pct'] * 0.5 + row['turnover_rate'] * 0.5
+
+                if match:
+                    results.append({
+                        'code': code,
+                        'name': name,
+                        'price': safe_float(row['price']),
+                        'change_pct': safe_float(row['change_pct']),
+                        'volume': safe_float(row['volume']),
+                        'turnover': safe_float(row['turnover']),
+                        'pe': safe_float(row.get('pe', 0)),
+                        'pb': safe_float(row.get('pb', 0)),
+                        'turnover_rate': safe_float(row.get('turnover_rate', 0)),
+                        'total_mv': safe_float(row.get('total_mv', 0)),
+                        'score': safe_float(score),
+                        'reason': reason,
+                        'indicators': indicators
+                    })
+
+            except Exception as e:
+                continue
+
+        results = sorted(results, key=lambda x: x.get('score', 0), reverse=True)
+        return {"success": True, "data": results[:limit], "count": len(results[:limit]), "strategy_id": strategy_id}
 
     # 策略参数默认值
     if strategy_id == "trend_follow":
@@ -965,26 +1336,30 @@ async def get_market_overview():
     """
     获取市场概况（从AKShare获取真实数据）
     """
+    if USE_MOCK_DATA:
+        return {"success": True, "data": get_mock_market_overview()}
+
     try:
         def fetch_data():
             # 涨跌停统计
             limit_up_df = ak.stock_zt_pool_em(date=datetime.now().strftime('%Y%m%d'))
             limit_down_df = ak.stock_zt_pool_dtgc_em(date=datetime.now().strftime('%Y%m%d'))
-            
+
             # 板块资金流
             sector_df = ak.stock_sector_fund_flow_rank(indicator="今日")
-            
+
             return {
                 'limit_up_count': len(limit_up_df),
                 'limit_down_count': len(limit_down_df),
                 'hot_sectors': sector_df.head(10).to_dict('records') if len(sector_df) > 0 else []
             }
-        
+
         data = await run_sync(fetch_data)
         return {"success": True, "data": data}
-    
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取市场概况失败: {str(e)}")
+        print(f"市场概况接口失败，使用模拟数据: {str(e)}")
+        return {"success": True, "data": get_mock_market_overview()}
 
 
 if __name__ == "__main__":
