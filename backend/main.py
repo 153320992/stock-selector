@@ -68,6 +68,12 @@ class Strategy(BaseModel):
     params: Dict[str, Any]
 
 
+class StrategyScreenRequest(BaseModel):
+    strategy_id: str
+    limit: int = 50
+    params: Optional[Dict[str, Any]] = None
+
+
 # ==================== 工具函数 ====================
 
 def safe_float(value, default=0.0):
@@ -84,6 +90,74 @@ async def run_sync(func, *args, **kwargs):
     """在线程池中运行同步函数"""
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(executor, func, *args, **kwargs)
+
+
+# ==================== 技术指标计算 ====================
+
+def calculate_ma(df: pd.DataFrame, periods: list) -> pd.DataFrame:
+    """计算移动平均线"""
+    for period in periods:
+        df[f'ma{period}'] = df['close'].rolling(window=period).mean()
+    return df
+
+
+def calculate_macd(df: pd.DataFrame, fast: int = 12, slow: int = 26, signal: int = 9) -> pd.DataFrame:
+    """计算MACD指标"""
+    exp1 = df['close'].ewm(span=fast, adjust=False).mean()
+    exp2 = df['close'].ewm(span=slow, adjust=False).mean()
+    df['macd'] = exp1 - exp2
+    df['macd_signal'] = df['macd'].ewm(span=signal, adjust=False).mean()
+    df['macd_hist'] = df['macd'] - df['macd_signal']
+    return df
+
+
+def calculate_rsi(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
+    """计算RSI指标"""
+    delta = df['close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    df[f'rsi{period}'] = 100 - (100 / (1 + rs))
+    return df
+
+
+def calculate_atr(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
+    """计算ATR（平均真实波幅）"""
+    high_low = df['high'] - df['low']
+    high_close = abs(df['high'] - df['close'].shift())
+    low_close = abs(df['low'] - df['close'].shift())
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    df[f'atr{period}'] = tr.rolling(window=period).mean()
+    return df
+
+
+def detect_golden_cross(df: pd.DataFrame, short_ma: int = 5, long_ma: int = 20) -> bool:
+    """检测均线金叉"""
+    if len(df) < max(short_ma, long_ma) + 1:
+        return False
+    prev_short = df.iloc[-2][f'ma{short_ma}']
+    prev_long = df.iloc[-2][f'ma{long_ma}']
+    curr_short = df.iloc[-1][f'ma{short_ma}']
+    curr_long = df.iloc[-1][f'ma{long_ma}']
+    return prev_short <= prev_long and curr_short > curr_long
+
+
+def detect_macd_golden_cross(df: pd.DataFrame) -> bool:
+    """检测MACD金叉"""
+    if len(df) < 2:
+        return False
+    prev = df.iloc[-2]
+    curr = df.iloc[-1]
+    return prev['macd'] <= prev['macd_signal'] and curr['macd'] > curr['macd_signal']
+
+
+def detect_breakout(df: pd.DataFrame, period: int = 20) -> bool:
+    """检测突破形态"""
+    if len(df) < period + 1:
+        return False
+    high_period = df.iloc[-period-1:-1]['high'].max()
+    curr_high = df.iloc[-1]['high']
+    return curr_high > high_period
 
 
 # ==================== API 端点 ====================
@@ -431,19 +505,48 @@ async def get_strategies():
 
 
 @app.post("/api/screen/strategy")
-async def screen_stocks_by_strategy(
-    strategy_id: str = Query(..., description="策略ID"),
-    limit: int = Query(50, description="返回数量限制"),
-    params: Optional[Dict[str, Any]] = None
-):
+async def screen_stocks_by_strategy(request: StrategyScreenRequest):
     """
     使用选股策略筛选股票（推荐股票）
     """
+    strategy_id = request.strategy_id
+    limit = request.limit
+    params = request.params or {}
+
+    # 策略参数默认值
+    if strategy_id == "trend_follow":
+        ma_short = params.get("ma_short", 5)
+        ma_mid = params.get("ma_mid", 10)
+        ma_long = params.get("ma_long", 20)
+        volume_ratio = params.get("volume_ratio", 1.2)
+    elif strategy_id == "breakout":
+        period = params.get("period", 20)
+        volume_multiple = params.get("volume_multiple", 1.5)
+        min_price_change = params.get("min_price_change", 2)
+    elif strategy_id == "value":
+        max_pe = params.get("max_pe", 30)
+        max_pb = params.get("max_pb", 3)
+        min_roe = params.get("min_roe", 10)
+    elif strategy_id == "volume_price":
+        min_change = params.get("min_change", 3)
+        max_change = params.get("max_change", 7)
+        min_turnover = params.get("min_turnover_rate", 3)
+        max_turnover = params.get("max_turnover_rate", 10)
+    elif strategy_id == "macd_cross":
+        fast_period = params.get("fast_period", 12)
+        slow_period = params.get("slow_period", 26)
+        signal_period = params.get("signal_period", 9)
+    elif strategy_id == "ma_cross":
+        short_period = params.get("short_period", 5)
+        long_period = params.get("long_period", 20)
+    else:
+        raise HTTPException(status_code=400, detail=f"未知策略ID: {strategy_id}")
+
     def fetch_and_filter():
         # 获取实时行情（添加重试机制）
         max_retries = 3
         df = None
-        
+
         for attempt in range(max_retries):
             try:
                 df = ak.stock_zh_a_spot_em()
@@ -452,10 +555,10 @@ async def screen_stocks_by_strategy(
                 if attempt == max_retries - 1:
                     raise Exception(f"获取股票数据失败，已重试{max_retries}次: {str(e)}")
                 continue
-        
+
         if df is None or len(df) == 0:
             raise Exception("未能获取股票数据")
-        
+
         df = df.rename(columns={
             '代码': 'code',
             '名称': 'name',
@@ -468,197 +571,225 @@ async def screen_stocks_by_strategy(
             '总市值': 'total_mv',
             '换手率': 'turnover_rate'
         })
-        
-        results = []
-        
-        # 根据不同策略进行筛选
-        if strategy_id == "trend_follow":
-            # 趋势跟踪策略
-            ma_short = params.get("ma_short", 5) if params else 5
-            ma_mid = params.get("ma_mid", 10) if params else 10
-            ma_long = params.get("ma_long", 20) if params else 20
-            volume_ratio = params.get("volume_ratio", 1.2) if params else 1.2
-            
-            # 筛选条件：涨幅在合理范围，有成交量支持
-            df_filtered = df[
-                (df['change_pct'] > 0) & 
-                (df['change_pct'] < 10) &
-                (df['pe'] > 0) & 
-                (df['pe'] < 50) &
-                (df['turnover_rate'] > 2) &
-                (df['turnover_rate'] < 15)
-            ].head(limit)
-            
-            for _, row in df_filtered.iterrows():
-                results.append({
-                    'code': row['code'],
-                    'name': row['name'],
-                    'price': safe_float(row['price']),
-                    'change_pct': safe_float(row['change_pct']),
-                    'volume': safe_float(row['volume']),
-                    'turnover': safe_float(row['turnover']),
-                    'pe': safe_float(row.get('pe', 0)),
-                    'pb': safe_float(row.get('pb', 0)),
-                    'turnover_rate': safe_float(row.get('turnover_rate', 0)),
-                    'score': safe_float(row['change_pct'] * row['turnover_rate']),
-                    'reason': f"涨幅{row['change_pct']:.2f}%，换手率{row['turnover_rate']:.2f}%，符合趋势跟踪特征"
-                })
-        
-        elif strategy_id == "breakout":
-            # 突破形态策略
-            min_change = params.get("min_price_change", 2) if params else 2
-            volume_multiple = params.get("volume_multiple", 1.5) if params else 1.5
-            
-            # 筛选涨幅较大、成交量放大的股票
-            df_filtered = df[
-                (df['change_pct'] > min_change) & 
-                (df['change_pct'] < 10) &
-                (df['turnover_rate'] > 5) &
-                (df['pe'] > 0) & 
-                (df['pe'] < 100)
-            ].head(limit)
-            
-            for _, row in df_filtered.iterrows():
-                results.append({
-                    'code': row['code'],
-                    'name': row['name'],
-                    'price': safe_float(row['price']),
-                    'change_pct': safe_float(row['change_pct']),
-                    'volume': safe_float(row['volume']),
-                    'turnover': safe_float(row['turnover']),
-                    'pe': safe_float(row.get('pe', 0)),
-                    'pb': safe_float(row.get('pb', 0)),
-                    'turnover_rate': safe_float(row.get('turnover_rate', 0)),
-                    'score': safe_float(row['change_pct'] * row['turnover_rate']),
-                    'reason': f"涨幅{row['change_pct']:.2f}%，换手率{row['turnover_rate']:.2f}%，疑似突破形态"
-                })
-        
-        elif strategy_id == "value":
-            # 价值低估策略
-            max_pe = params.get("max_pe", 30) if params else 30
-            max_pb = params.get("max_pb", 3) if params else 3
-            min_roe = params.get("min_roe", 10) if params else 10
-            
-            # 筛选估值合理的股票
-            df_filtered = df[
-                (df['pe'] > 0) & 
-                (df['pe'] < max_pe) &
-                (df['pb'] > 0) &
-                (df['pb'] < max_pb) &
+
+        # 预筛选：过滤掉明显不符合的股票，减少后续处理量
+        if strategy_id in ["trend_follow", "breakout", "volume_price", "macd_cross", "ma_cross"]:
+            # 技术策略需要有一定涨幅和成交量
+            df = df[
                 (df['change_pct'] > -5) &
-                (df['change_pct'] < 5)
-            ].head(limit)
-            
-            # 计算评分（估值越低分数越高）
-            for _, row in df_filtered.iterrows():
-                value_score = (max_pe - row['pe']) / max_pe + (max_pb - row['pb']) / max_pb
-                results.append({
-                    'code': row['code'],
-                    'name': row['name'],
-                    'price': safe_float(row['price']),
-                    'change_pct': safe_float(row['change_pct']),
-                    'volume': safe_float(row['volume']),
-                    'turnover': safe_float(row['turnover']),
-                    'pe': safe_float(row.get('pe', 0)),
-                    'pb': safe_float(row.get('pb', 0)),
-                    'turnover_rate': safe_float(row.get('turnover_rate', 0)),
-                    'score': safe_float(value_score * 50),
-                    'reason': f"PE={row['pe']:.1f}，PB={row['pb']:.2f}，估值合理"
+                (df['change_pct'] < 10) &
+                (df['turnover_rate'] > 0.5) &
+                (df['turnover_rate'] < 20)
+            ]
+        elif strategy_id == "value":
+            # 价值策略关注估值
+            df = df[
+                (df['pe'] > 0) &
+                (df['pe'] < 100) &
+                (df['pb'] > 0) &
+                (df['pb'] < 10)
+            ]
+
+        # 限制扫描数量以保证性能
+        scan_limit = min(len(df), 200)
+        df_scan = df.head(scan_limit)
+
+        results = []
+
+        # 对每只股票获取历史数据并计算指标
+        for _, row in df_scan.iterrows():
+            code = row['code']
+            name = row['name']
+
+            try:
+                # 获取历史数据（最近60天）
+                end_date = datetime.now().strftime('%Y%m%d')
+                start_date = (datetime.now() - timedelta(days=90)).strftime('%Y%m%d')
+                hist_df = ak.stock_zh_a_hist(symbol=code, period="daily", adjust="qfq",
+                                             start_date=start_date, end_date=end_date)
+
+                if len(hist_df) < 30:
+                    continue
+
+                hist_df = hist_df.rename(columns={
+                    '日期': 'date',
+                    '开盘': 'open',
+                    '收盘': 'close',
+                    '最高': 'high',
+                    '最低': 'low',
+                    '成交量': 'volume',
+                    '成交额': 'amount'
                 })
-        
-        elif strategy_id == "volume_price":
-            # 量价配合策略
-            min_change = params.get("min_change", 3) if params else 3
-            max_change = params.get("max_change", 7) if params else 7
-            min_turnover = params.get("min_turnover_rate", 3) if params else 3
-            max_turnover = params.get("max_turnover_rate", 10) if params else 10
-            
-            # 筛选放量上涨的股票
-            df_filtered = df[
-                (df['change_pct'] >= min_change) & 
-                (df['change_pct'] <= max_change) &
-                (df['turnover_rate'] >= min_turnover) &
-                (df['turnover_rate'] <= max_turnover) &
-                (df['pe'] > 0)
-            ].head(limit)
-            
-            for _, row in df_filtered.iterrows():
-                results.append({
-                    'code': row['code'],
-                    'name': row['name'],
-                    'price': safe_float(row['price']),
-                    'change_pct': safe_float(row['change_pct']),
-                    'volume': safe_float(row['volume']),
-                    'turnover': safe_float(row['turnover']),
-                    'pe': safe_float(row.get('pe', 0)),
-                    'pb': safe_float(row.get('pb', 0)),
-                    'turnover_rate': safe_float(row.get('turnover_rate', 0)),
-                    'score': safe_float(row['change_pct'] + row['turnover_rate']),
-                    'reason': f"涨幅{row['change_pct']:.2f}%，换手率{row['turnover_rate']:.2f}%，量价配合良好"
-                })
-        
-        elif strategy_id == "macd_cross":
-            # MACD金叉策略 - 筛选近期能量转强的股票
-            df_filtered = df[
-                (df['change_pct'] > 0) & 
-                (df['change_pct'] < 8) &
-                (df['turnover_rate'] > 2) &
-                (df['pe'] > 0) & 
-                (df['pe'] < 50)
-            ].head(limit)
-            
-            for _, row in df_filtered.iterrows():
-                results.append({
-                    'code': row['code'],
-                    'name': row['name'],
-                    'price': safe_float(row['price']),
-                    'change_pct': safe_float(row['change_pct']),
-                    'volume': safe_float(row['volume']),
-                    'turnover': safe_float(row['turnover']),
-                    'pe': safe_float(row.get('pe', 0)),
-                    'pb': safe_float(row.get('pb', 0)),
-                    'turnover_rate': safe_float(row.get('turnover_rate', 0)),
-                    'score': safe_float(row['change_pct'] * 2),
-                    'reason': f"涨幅{row['change_pct']:.2f}%，可能形成MACD金叉"
-                })
-        
-        elif strategy_id == "ma_cross":
-            # 均线交叉策略
-            df_filtered = df[
-                (df['change_pct'] > 1) & 
-                (df['change_pct'] < 7) &
-                (df['turnover_rate'] > 2) &
-                (df['pe'] > 0) & 
-                (df['pe'] < 50)
-            ].head(limit)
-            
-            for _, row in df_filtered.iterrows():
-                results.append({
-                    'code': row['code'],
-                    'name': row['name'],
-                    'price': safe_float(row['price']),
-                    'change_pct': safe_float(row['change_pct']),
-                    'volume': safe_float(row['volume']),
-                    'turnover': safe_float(row['turnover']),
-                    'pe': safe_float(row.get('pe', 0)),
-                    'pb': safe_float(row.get('pb', 0)),
-                    'turnover_rate': safe_float(row.get('turnover_rate', 0)),
-                    'score': safe_float(row['change_pct'] + row['turnover_rate']),
-                    'reason': f"涨幅{row['change_pct']:.2f}%，可能形成均线金叉"
-                })
-        
-        else:
-            raise ValueError(f"未知策略ID: {strategy_id}")
-        
+                hist_df = hist_df.reset_index(drop=True)
+
+                # 计算所需指标
+                match = False
+                reason = ""
+                indicators = {}
+                score = 0
+
+                if strategy_id == "trend_follow":
+                    # 趋势跟踪策略：均线多头排列
+                    hist_df = calculate_ma(hist_df, [ma_short, ma_mid, ma_long])
+                    latest = hist_df.iloc[-1]
+
+                    ma_short_val = latest[f'ma{ma_short}']
+                    ma_mid_val = latest[f'ma{ma_mid}']
+                    ma_long_val = latest[f'ma{long_ma}']
+
+                    # 检查均线多头排列
+                    is_bullish = (ma_short_val > ma_mid_val > ma_long_val)
+                    price_above_ma = latest['close'] > ma_short_val
+                    volume_ok = row['turnover_rate'] > 2 and row['turnover_rate'] < 15
+                    pe_ok = row['pe'] > 0 and row['pe'] < 50
+
+                    if is_bullish and price_above_ma and volume_ok and pe_ok:
+                        match = True
+                        indicators = {
+                            f'ma{ma_short}': safe_float(ma_short_val),
+                            f'ma{ma_mid}': safe_float(ma_mid_val),
+                            f'ma{ma_long}': safe_float(ma_long_val)
+                        }
+                        reason = f"均线多头排列(MA{ma_short}>{ma_mid}>{ma_long})，股价站上MA{ma_short}"
+                        # 评分：涨幅+换手率+均线排列强度
+                        score = row['change_pct'] * 0.4 + row['turnover_rate'] * 0.3 + 20
+
+                elif strategy_id == "breakout":
+                    # 突破形态策略
+                    hist_df = calculate_ma(hist_df, [period])
+                    hist_df = calculate_atr(hist_df, 14)
+
+                    latest = hist_df.iloc[-1]
+                    ma_val = latest[f'ma{period}']
+                    atr_val = latest.get('atr14', 0)
+
+                    # 检测突破
+                    is_breakout = detect_breakout(hist_df, period)
+                    volume_high = row['turnover_rate'] > volume_multiple * 2
+                    price_above_ma = latest['close'] > ma_val
+
+                    if is_breakout and volume_high and price_above_ma:
+                        match = True
+                        indicators = {
+                            f'ma{period}': safe_float(ma_val),
+                            'atr14': safe_float(atr_val),
+                            'period_high': safe_float(hist_df.iloc[-period-1:-1]['high'].max())
+                        }
+                        reason = f"突破{period}日高点，成交量{row['turnover_rate']:.2f}%"
+                        score = row['change_pct'] * 0.5 + row['turnover_rate'] * 0.5
+
+                elif strategy_id == "value":
+                    # 价值低估策略
+                    pe_ok = row['pe'] > 0 and row['pe'] < max_pe
+                    pb_ok = row['pb'] > 0 and row['pb'] < max_pb
+                    price_stable = row['change_pct'] > -5 and row['change_pct'] < 5
+
+                    if pe_ok and pb_ok and price_stable:
+                        match = True
+                        indicators = {
+                            'pe': safe_float(row['pe']),
+                            'pb': safe_float(row['pb'])
+                        }
+                        reason = f"PE={row['pe']:.1f}，PB={row['pb']:.2f}，估值合理"
+                        # 估值越低分数越高
+                        pe_score = (max_pe - row['pe']) / max_pe * 50
+                        pb_score = (max_pb - row['pb']) / max_pb * 30
+                        score = pe_score + pb_score
+
+                elif strategy_id == "volume_price":
+                    # 量价配合策略
+                    change_ok = row['change_pct'] >= min_change and row['change_pct'] <= max_change
+                    turnover_ok = row['turnover_rate'] >= min_turnover and row['turnover_rate'] <= max_turnover
+                    pe_ok = row['pe'] > 0
+
+                    if change_ok and turnover_ok and pe_ok:
+                        match = True
+                        indicators = {
+                            'change_pct': safe_float(row['change_pct']),
+                            'turnover_rate': safe_float(row['turnover_rate'])
+                        }
+                        reason = f"涨幅{row['change_pct']:.2f}%，换手率{row['turnover_rate']:.2f}%，量价配合"
+                        score = row['change_pct'] + row['turnover_rate']
+
+                elif strategy_id == "macd_cross":
+                    # MACD金叉策略
+                    hist_df = calculate_macd(hist_df, fast_period, slow_period, signal_period)
+                    latest = hist_df.iloc[-1]
+
+                    macd_val = latest['macd']
+                    signal_val = latest['macd_signal']
+                    hist_val = latest['macd_hist']
+
+                    # 检测MACD金叉
+                    is_golden_cross = detect_macd_golden_cross(hist_df)
+
+                    # 额外条件：价格稳定，有成交量
+                    price_ok = row['change_pct'] > 0 and row['change_pct'] < 8
+                    volume_ok = row['turnover_rate'] > 2 and row['turnover_rate'] < 15
+
+                    if is_golden_cross and price_ok and volume_ok:
+                        match = True
+                        indicators = {
+                            'macd': safe_float(macd_val),
+                            'macd_signal': safe_float(signal_val),
+                            'macd_hist': safe_float(hist_val)
+                        }
+                        reason = "MACD金叉形成"
+                        score = abs(macd_val) * 10 + row['change_pct']
+
+                elif strategy_id == "ma_cross":
+                    # 均线交叉策略
+                    hist_df = calculate_ma(hist_df, [short_period, long_period])
+                    latest = hist_df.iloc[-1]
+
+                    ma_short_val = latest[f'ma{short_period}']
+                    ma_long_val = latest[f'ma{long_period}']
+
+                    # 检测均线金叉
+                    is_golden_cross = detect_golden_cross(hist_df, short_period, long_period)
+
+                    price_ok = row['change_pct'] > 1 and row['change_pct'] < 7
+                    volume_ok = row['turnover_rate'] > 2 and row['turnover_rate'] < 15
+
+                    if is_golden_cross and price_ok and volume_ok:
+                        match = True
+                        indicators = {
+                            f'ma{short_period}': safe_float(ma_short_val),
+                            f'ma{long_period}': safe_float(ma_long_val)
+                        }
+                        reason = f"MA{short_period}上穿MA{long_period}金叉"
+                        score = (ma_short_val - ma_long_val) / ma_long_val * 100 + row['change_pct']
+
+                if match:
+                    results.append({
+                        'code': code,
+                        'name': name,
+                        'price': safe_float(row['price']),
+                        'change_pct': safe_float(row['change_pct']),
+                        'volume': safe_float(row['volume']),
+                        'turnover': safe_float(row['turnover']),
+                        'pe': safe_float(row.get('pe', 0)),
+                        'pb': safe_float(row.get('pb', 0)),
+                        'turnover_rate': safe_float(row.get('turnover_rate', 0)),
+                        'total_mv': safe_float(row.get('total_mv', 0)),
+                        'score': safe_float(score),
+                        'reason': reason,
+                        'indicators': indicators
+                    })
+
+            except Exception as e:
+                # 单只股票处理失败，继续处理下一只
+                continue
+
         # 按评分排序
         results = sorted(results, key=lambda x: x.get('score', 0), reverse=True)
-        
+
         return results[:limit]
-    
+
     try:
         stocks = await run_sync(fetch_and_filter)
         return {"success": True, "data": stocks, "count": len(stocks), "strategy_id": strategy_id}
-    
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"策略选股失败: {str(e)}")
 

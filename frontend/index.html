@@ -345,6 +345,15 @@
                                 </el-tag>
                             </template>
                         </el-table-column>
+                        <el-table-column label="技术指标" width="200" v-if="screenMode === 'strategy'">
+                            <template #default="scope">
+                                <div v-if="scope.row.indicators" style="font-size: 12px; color: #909399;">
+                                    <span v-for="(value, key) in scope.row.indicators" :key="key" style="display: inline-block; margin-right: 8px;">
+                                        {{ key.toUpperCase().replace('MACD_', '').replace('MA', 'MA') }}: {{ typeof value === 'number' ? value.toFixed(2) : value }}
+                                    </span>
+                                </div>
+                            </template>
+                        </el-table-column>
                         <el-table-column prop="reason" label="选股理由" min-width="200" v-if="screenMode === 'strategy'">
                             <template #default="scope">
                                 <span style="color: #606266; font-size: 13px;">{{ scope.row.reason }}</span>
@@ -665,17 +674,16 @@
                         ElMessage.warning('请选择选股策略');
                         return;
                     }
-                    
+
                     loading.value = true;
                     try {
-                        const res = await axios.post(`${API_BASE}/api/screen/strategy`, null, {
-                            params: {
-                                strategy_id: strategyScreenForm.strategy_id,
-                                limit: strategyScreenForm.limit
-                            },
-                            data: strategyScreenForm.params
-                        });
-                        
+                        const requestData = {
+                            strategy_id: strategyScreenForm.strategy_id,
+                            limit: strategyScreenForm.limit,
+                            params: strategyScreenForm.params || {}
+                        };
+                        const res = await axios.post(`${API_BASE}/api/screen/strategy`, requestData);
+
                         if (res.data.success) {
                             screenedStocks.value = res.data.data;
                             ElMessage.success(`策略选股完成，共找到 ${res.data.count} 只符合条件的股票`);
